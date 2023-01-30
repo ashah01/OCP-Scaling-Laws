@@ -1301,8 +1301,8 @@ class GemNetOC(BaseModel):
         x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1))
         if self.direct_forces:
             x_F = self.out_mlp_F(torch.cat(xs_F, dim=-1))
-        # with torch.cuda.amp.autocast(False):
-        with torch.cpu.amp.autocast(False):
+        with torch.cuda.amp.autocast(False):
+            # with torch.cpu.amp.autocast(False):
             E_t = self.out_energy(x_E.float())
             if self.direct_forces:
                 F_st = self.out_forces(x_F.float())

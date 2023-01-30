@@ -327,8 +327,8 @@ class ForcesTrainer(BaseTrainer):
                 batch = next(train_loader_iter)
 
                 # Forward, loss, backward.
-                # with torch.cuda.amp.autocast(enabled=self.scaler is not None):
-                with torch.cpu.amp.autocast(enabled=self.scaler is not None):
+                with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                    # with torch.cpu.amp.autocast(enabled=self.scaler is not None):
                     out = self._forward(batch)
                     loss = self._compute_loss(out, batch)
                 loss = self.scaler.scale(loss) if self.scaler else loss
