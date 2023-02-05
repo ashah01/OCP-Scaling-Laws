@@ -1,0 +1,39 @@
+includes:
+  - configs/oc22/s2ef/base.yml
+
+model:
+  name: graphormer
+  blocks: 4
+  layers: 12
+  embed_dim: 768
+  ffn_embed_dim: 768
+  attention_heads: 48
+  input_dropout: 0.0
+  dropout: 0.0
+  attention_dropout: 0.1
+  activation_dropout: 0.0
+  node_loss_weight: 15
+  min_node_loss_weight: 1
+  eng_loss_weight: 1
+  num_kernel: 128
+  regress_forces: True
+  otf_graph: True
+
+optim:
+  batch_size: 3
+  eval_batch_size: 3
+  eval_every: 5000
+  num_workers: 0
+  lr_initial: 0.0001
+  warmup_steps: -1 # don't warm-up the learning rate
+  # warmup_factor: 0.2
+  lr_gamma: 0.8
+  # Following calculation is for an effective batch size of 3 x 32 GPUs = 96
+  # and a dataset size of 8225293 (1 epoch ~ 85500 steps).
+  lr_milestones: # steps at which lr_initial <- lr_initial * lr_gamma
+    - 171000 # ~2 epochs
+    - 257000 # ~3 epochs
+    - 343000 # ~4 epochs
+    - 428000 # ~5 epochs
+    - 514000 # ~6 epochs
+  max_epochs: 80
