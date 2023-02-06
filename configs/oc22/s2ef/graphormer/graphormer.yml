@@ -20,12 +20,12 @@ model:
   otf_graph: True
 
 optim:
-  batch_size: 3
-  eval_batch_size: 3
+  batch_size: 2
+  eval_batch_size: 2
   eval_every: 5000
   num_workers: 0
-  lr_initial: 0.0001
-  warmup_steps: -1 # don't warm-up the learning rate
+  lr_initial: 0.0003
+  warmup_steps: 10000 # don't warm-up the learning rate
   # warmup_factor: 0.2
   lr_gamma: 0.8
   # Following calculation is for an effective batch size of 3 x 32 GPUs = 96
@@ -36,4 +36,5 @@ optim:
     - 343000 # ~4 epochs
     - 428000 # ~5 epochs
     - 514000 # ~6 epochs
-  max_epochs: 80
+  max_epochs: 12 # 1M (as per graphormer total updates config) / (171,000 / 2)
+  clip_grad_norm: 5
