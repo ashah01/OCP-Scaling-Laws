@@ -1,6 +1,5 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-
 from typing import Callable, Optional
 
 import torch
@@ -8,10 +7,165 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from ocpmodels.common.registry import registry
+from ocpmodels.common.utils import (
+    conditional_grad,
+    get_pbc_distances,
+    radius_graph_pbc,
+)
+from ocpmodels.models.base import BaseModel
+
+from .data_loading import load_dataset
+
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)
 torch._C._jit_override_can_fuse_on_cpu(True)
 torch._C._jit_override_can_fuse_on_gpu(True)
+
+
+@registry.register_model("graphormer")
+class Graphormer(BaseModel):
+    def __init__(
+        self,
+        num_atoms: Optional[int],
+        bond_feat_dim: int,
+        num_targets: int,
+        blocks: int,
+        layers: int,
+        embed_dim: int,
+        ffn_embed_dim: int,
+        attention_heads: int,
+        input_dropout: float,
+        dropout: float,
+        attention_dropout: float,
+        activation_dropout: float,
+        node_loss_weight: float,
+        min_node_loss_weight: float,
+        eng_loss_weight: int,
+        num_kernel: int,
+        regress_forces: bool = True,
+        otf_graph: bool = True,
+    ):
+        super().__init__()
+        self.regress_forces = regress_forces
+        self.atom_types = 64
+        self.edge_types = 64 * 64
+        self.blocks = blocks
+        self.atom_encoder = nn.Embedding(
+            self.atom_types, embed_dim, padding_idx=0
+        )
+        self.tag_encoder = nn.Embedding(3, embed_dim)
+        self.input_dropout = input_dropout
+        self.layers = nn.ModuleList(
+            [
+                Graphormer3DEncoderLayer(
+                    embed_dim,
+                    ffn_embed_dim,
+                    num_attention_heads=attention_heads,
+                    dropout=dropout,
+                    attention_dropout=attention_dropout,
+                    activation_dropout=activation_dropout,
+                )
+                for _ in range(layers)
+            ]
+        )
+
+        self.final_ln: Callable[[Tensor], Tensor] = nn.LayerNorm(embed_dim)
+
+        self.engergy_proj: Callable[[Tensor], Tensor] = NonLinear(embed_dim, 1)
+        self.energe_agg_factor: Callable[[Tensor], Tensor] = nn.Embedding(3, 1)
+        nn.init.normal_(self.energe_agg_factor.weight, 0, 0.01)
+
+        K = num_kernel
+
+        self.gbf: Callable[[Tensor, Tensor], Tensor] = GaussianLayer(
+            K, self.edge_types
+        )
+        self.bias_proj: Callable[[Tensor], Tensor] = NonLinear(
+            K, attention_heads
+        )
+        self.edge_proj: Callable[[Tensor], Tensor] = nn.Linear(K, embed_dim)
+
+    @conditional_grad(torch.enable_grad())
+    def _forward(self, data):
+        atoms, tags, pos, real_mask = load_dataset(data)
+        padding_mask = atoms.eq(0)
+
+        n_graph, n_node = atoms.size()
+        delta_pos = pos.unsqueeze(1) - pos.unsqueeze(2)
+        dist: Tensor = delta_pos.norm(dim=-1)
+        delta_pos /= dist.unsqueeze(-1) + 1e-5
+
+        edge_type = atoms.view(
+            n_graph, n_node, 1
+        ) * self.atom_types + atoms.view(n_graph, 1, n_node)
+
+        gbf_feature = self.gbf(dist, edge_type)
+        edge_features = gbf_feature.masked_fill(
+            padding_mask.unsqueeze(1).unsqueeze(-1), 0.0
+        )
+
+        graph_node_feature = (
+            self.tag_encoder(tags)
+            + self.atom_encoder(atoms)
+            + self.edge_proj(edge_features.sum(dim=-2))
+        )
+
+        # ===== MAIN MODEL =====
+        output = F.dropout(
+            graph_node_feature, p=self.input_dropout, training=self.training
+        )
+        output = output.transpose(0, 1).contiguous()
+
+        graph_attn_bias = (
+            self.bias_proj(gbf_feature).permute(0, 3, 1, 2).contiguous()
+        )
+        graph_attn_bias.masked_fill_(
+            padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
+        )
+
+        graph_attn_bias = graph_attn_bias.view(-1, n_node, n_node)
+        for _ in range(self.blocks):
+            for enc_layer in self.layers:
+                output = enc_layer(output, attn_bias=graph_attn_bias)
+
+        output = self.final_ln(output)
+        output = output.transpose(0, 1)
+
+        eng_output = F.dropout(output, p=0.1, training=self.training)
+        eng_output = (
+            self.engergy_proj(eng_output) * self.energe_agg_factor(tags)
+        ).flatten(-2)
+        output_mask = (
+            tags > 0
+        ) & real_mask  # no need to consider padding, since padding has tag 0, real_mask False
+
+        eng_output *= output_mask
+        eng_output = eng_output.sum(dim=-1)
+
+        return eng_output
+
+    def forward(self, data):
+        if self.regress_forces:
+            data.pos.requires_grad_(True)
+        energy = self._forward(data)
+
+        if self.regress_forces:
+            forces = -1 * (
+                torch.autograd.grad(
+                    energy,
+                    data.pos,
+                    grad_outputs=torch.ones_like(energy),
+                    create_graph=True,
+                )[0]
+            )
+            return energy, forces
+        else:
+            return energy
+
+    @property
+    def num_params(self):
+        return sum(p.numel() for p in self.parameters())
 
 
 @torch.jit.script
@@ -257,150 +411,3 @@ class NodeTaskHead(nn.Module):
         f3 = self.force_proj3(x[:, :, 2, :]).view(bsz, n_node, 1)
         cur_force = torch.cat([f1, f2, f3], dim=-1).float()
         return cur_force
-
-
-class Graphormer3D(nn.Module):
-    def __init__(
-        self,
-        num_atoms: Optional[int],
-        bond_feat_dim: int,
-        num_targets: int,
-        blocks: int,
-        layers: int,
-        embed_dim: int,
-        ffn_embed_dim: int,
-        attention_heads: int,
-        input_dropout: float,
-        dropout: float,
-        attention_dropout: float,
-        activation_dropout: float,
-        node_loss_weight: float,
-        min_node_loss_weight: float,
-        eng_loss_weight: int,
-        num_kernel: int,
-        regress_forces: bool = True,
-        otf_graph: bool = True,
-    ):
-        super().__init__()
-        self.atom_types = 64
-        self.edge_types = 64 * 64
-        self.blocks = blocks
-        self.atom_encoder = nn.Embedding(
-            self.atom_types, embed_dim, padding_idx=0
-        )
-        self.tag_encoder = nn.Embedding(3, embed_dim)
-        self.input_dropout = input_dropout
-        self.layers = nn.ModuleList(
-            [
-                Graphormer3DEncoderLayer(
-                    embed_dim,
-                    ffn_embed_dim,
-                    num_attention_heads=attention_heads,
-                    dropout=dropout,
-                    attention_dropout=attention_dropout,
-                    activation_dropout=activation_dropout,
-                )
-                for _ in range(layers)
-            ]
-        )
-
-        self.final_ln: Callable[[Tensor], Tensor] = nn.LayerNorm(embed_dim)
-
-        self.engergy_proj: Callable[[Tensor], Tensor] = NonLinear(embed_dim, 1)
-        self.energe_agg_factor: Callable[[Tensor], Tensor] = nn.Embedding(3, 1)
-        nn.init.normal_(self.energe_agg_factor.weight, 0, 0.01)
-
-        K = num_kernel
-
-        self.gbf: Callable[[Tensor, Tensor], Tensor] = GaussianLayer(
-            K, self.edge_types
-        )
-        self.bias_proj: Callable[[Tensor], Tensor] = NonLinear(
-            K, attention_heads
-        )
-        self.edge_proj: Callable[[Tensor], Tensor] = nn.Linear(K, embed_dim)
-        self.node_proc: Callable[
-            [Tensor, Tensor, Tensor], Tensor
-        ] = NodeTaskHead(embed_dim, attention_heads)
-
-    def set_num_updates(self, num_updates):
-        self.num_updates = num_updates
-        return super().set_num_updates(num_updates)
-
-    def forward(
-        self, atoms: Tensor, tags: Tensor, pos: Tensor, real_mask: Tensor
-    ):
-        padding_mask = atoms.eq(0)
-
-        n_graph, n_node = atoms.size()
-        delta_pos = pos.unsqueeze(1) - pos.unsqueeze(2)
-        dist: Tensor = delta_pos.norm(dim=-1)
-        delta_pos /= dist.unsqueeze(-1) + 1e-5
-
-        edge_type = atoms.view(
-            n_graph, n_node, 1
-        ) * self.atom_types + atoms.view(n_graph, 1, n_node)
-
-        gbf_feature = self.gbf(dist, edge_type)
-        edge_features = gbf_feature.masked_fill(
-            padding_mask.unsqueeze(1).unsqueeze(-1), 0.0
-        )
-
-        graph_node_feature = (
-            self.tag_encoder(tags)
-            + self.atom_encoder(atoms)
-            + self.edge_proj(edge_features.sum(dim=-2))
-        )
-
-        # ===== MAIN MODEL =====
-        output = F.dropout(
-            graph_node_feature, p=self.input_dropout, training=self.training
-        )
-        output = output.transpose(0, 1).contiguous()
-
-        graph_attn_bias = (
-            self.bias_proj(gbf_feature).permute(0, 3, 1, 2).contiguous()
-        )
-        graph_attn_bias.masked_fill_(
-            padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
-        )
-
-        graph_attn_bias = graph_attn_bias.view(-1, n_node, n_node)
-        for _ in range(self.blocks):
-            for enc_layer in self.layers:
-                output = enc_layer(output, attn_bias=graph_attn_bias)
-
-        output = self.final_ln(output)
-        output = output.transpose(0, 1)
-
-        eng_output = F.dropout(output, p=0.1, training=self.training)
-        eng_output = (
-            self.engergy_proj(eng_output) * self.energe_agg_factor(tags)
-        ).flatten(-2)
-        output_mask = (
-            tags > 0
-        ) & real_mask  # no need to consider padding, since padding has tag 0, real_mask False
-
-        eng_output *= output_mask
-        eng_output = eng_output.sum(dim=-1)
-
-        node_output = self.node_proc(output, graph_attn_bias, delta_pos)
-
-        node_target_mask = output_mask.unsqueeze(-1)
-        return eng_output, node_output, node_target_mask
-
-
-def base_architecture(args):
-    args.blocks = getattr(args, "blocks", 4)
-    args.layers = getattr(args, "layers", 12)
-    args.embed_dim = getattr(args, "embed_dim", 768)
-    args.ffn_embed_dim = getattr(args, "ffn_embed_dim", 768)
-    args.attention_heads = getattr(args, "attention_heads", 48)
-    args.input_dropout = getattr(args, "input_dropout", 0.0)
-    args.dropout = getattr(args, "dropout", 0.1)
-    args.attention_dropout = getattr(args, "attention_dropout", 0.1)
-    args.activation_dropout = getattr(args, "activation_dropout", 0.0)
-    args.node_loss_weight = getattr(args, "node_loss_weight", 15)
-    args.min_node_loss_weight = getattr(args, "min_node_loss_weight", 1)
-    args.eng_loss_weight = getattr(args, "eng_loss_weight", 1)
-    args.num_kernel = getattr(args, "num_kernel", 128)
