@@ -35,11 +35,15 @@ class PBCDataset:
         atoms = data["atomic_numbers"]
         tags = data["tags"]
         batch_size = data["cell"].size(0)
-
+        pos_array = []
+        atoms_array = []
+        tags_array = []
+        real_mask_array = []
         indices = [0, *map(lambda x: x.item(), data.natoms)]
         for i in range(batch_size):
             pos_ = pos[indices[i] : indices[i + 1] + indices[i]]
             tags_ = tags[indices[i] : indices[i + 1] + indices[i]]
+            atoms_ = atoms[indices[i] : indices[i + 1] + indices[i]]
             offsets = torch.matmul(self.cell_offsets, cell[i]).view(
                 self.n_cells, 1, 3
             )
@@ -59,17 +63,25 @@ class PBCDataset:
             used_expand_tags = tags_.repeat(self.n_cells)[
                 used_mask
             ]  # original implementation use zeros, need to test
-        # TODO: Integrate pad1d collation into batched preprocessing
+            pos_array.append(torch.cat([pos_, used_expand_pos], dim=0))
+            atoms_array.append(
+                torch.cat([atoms_, atoms_.repeat(self.n_cells)[used_mask]])
+            )
+            tags_array.append(torch.cat([tags_, used_expand_tags]))
+            real_mask_array.append(
+                torch.cat(
+                    [
+                        torch.ones_like(tags_, dtype=torch.bool),
+                        torch.zeros_like(used_expand_tags, dtype=torch.bool),
+                    ]
+                )
+            )
+
         return dict(
-            pos=torch.cat([pos, used_expand_pos], dim=0),
-            atoms=torch.cat([atoms, atoms.repeat(self.n_cells)[used_mask]]),
-            tags=torch.cat([tags, used_expand_tags]),
-            real_mask=torch.cat(
-                [
-                    torch.ones_like(tags, dtype=torch.bool),
-                    torch.zeros_like(used_expand_tags, dtype=torch.bool),
-                ]
-            ),
+            pos=pos_array,
+            atoms=atoms_array,
+            tags=tags_array,
+            real_mask=real_mask_array,
         )
 
 
@@ -159,10 +171,7 @@ class AtomDataset:
 
     def get(self):
         atoms: Tensor = self.dataset[self.keyword]
-        return self.atom_mapper[atoms]
-
-    def collater(self, samples):
-        return pad_1d(samples)
+        return [self.atom_mapper[atom] for atom in atoms]
 
 
 class KeywordDataset:
@@ -176,22 +185,15 @@ class KeywordDataset:
     def get(self):
         return self.dataset[self.keyword]
 
-    def collater(self, samples):
-        if self.is_scalar:
-            return torch.tensor(samples)
-        return pad_1d(samples, fill=self.pad_fill)
-
 
 def load_dataset(data):
     data.atomic_numbers = data.atomic_numbers.long()
 
     pbc_dataset = PBCDataset()
     result = pbc_dataset.preprocess(data)
-
-    atoms = AtomDataset(result, "atoms").get()
-    tags = KeywordDataset(result, "tags").get()
-    real_mask = KeywordDataset(result, "real_mask").get()
-
-    pos = KeywordDataset(result, "pos").get()
+    atoms = pad_1d(AtomDataset(result, "atoms").get())
+    tags = pad_1d(KeywordDataset(result, "tags").get())
+    real_mask = pad_1d(KeywordDataset(result, "real_mask").get())
+    pos = pad_1d(KeywordDataset(result, "pos").get())
 
     return atoms, tags, pos, real_mask
