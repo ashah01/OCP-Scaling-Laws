@@ -94,7 +94,6 @@ class Graphormer(BaseModel):
         n_graph, n_node = atoms.size()
         delta_pos = pos.unsqueeze(1) - pos.unsqueeze(2)
         dist: Tensor = delta_pos.norm(dim=-1)
-        delta_pos /= dist.unsqueeze(-1) + 1e-5
 
         edge_type = atoms.view(
             n_graph, n_node, 1
@@ -149,7 +148,7 @@ class Graphormer(BaseModel):
         if self.regress_forces:
             data.pos.requires_grad_(True)
         energy = self._forward(data)
-
+        energy = energy.unsqueeze(1)
         if self.regress_forces:
             forces = -1 * (
                 torch.autograd.grad(
