@@ -93,6 +93,8 @@ class Graphormer(BaseModel):
 
         n_graph, n_node = atoms.size()
         delta_pos = pos.unsqueeze(1) - pos.unsqueeze(2)
+        with torch.no_grad():
+            delta_pos.clamp_(min=1e-2)
         dist: Tensor = delta_pos.norm(dim=-1)
 
         edge_type = atoms.view(
