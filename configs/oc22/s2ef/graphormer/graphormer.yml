@@ -12,9 +12,6 @@ model:
   dropout: 0.0
   attention_dropout: 0.1
   activation_dropout: 0.0
-  node_loss_weight: 15
-  min_node_loss_weight: 1
-  eng_loss_weight: 1
   num_kernel: 128
   regress_forces: True
   otf_graph: True
