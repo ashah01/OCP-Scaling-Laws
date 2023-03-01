@@ -17,8 +17,8 @@ model:
   otf_graph: True
 
 optim:
-  batch_size: 16
-  eval_batch_size: 16
+  batch_size: 10
+  eval_batch_size: 10
   eval_every: 5000
   num_workers: 0
   lr_initial: 0.0003
