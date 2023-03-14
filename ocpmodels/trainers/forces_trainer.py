@@ -9,11 +9,13 @@ import logging
 import os
 import pathlib
 from collections import defaultdict
+from math import ceil
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch_geometric
+from torch_geometric.data import Batch
 from tqdm import tqdm
 
 from ocpmodels.common import distutils
@@ -337,25 +339,44 @@ class ForcesTrainer(BaseTrainer):
 
                 # Get a batch.
                 batch = next(train_loader_iter)
-
+                # Loss normalization algorithm
+                Nu = self.config["optim"]["micro_batch_size"]
+                Nb = self.config["optim"]["batch_size"]
+                NSu = ceil(Nb / Nu)
+                u = self.split(batch[0], Nu)
+                avg_l = 0  # Batch loss (for use in metrics update)
+                agg_o = {
+                    "energy": torch.tensor([]),
+                    "forces": torch.tensor([]),
+                }  # Batch output (for use in metrics computation)
                 # Forward, loss, backward.
                 with torch.cuda.amp.autocast(enabled=self.scaler is not None):
                     # with torch.cpu.amp.autocast(enabled=self.scaler is not None):
-                    out = self._forward(batch)
-                    loss = self._compute_loss(out, batch)
-                loss = self.scaler.scale(loss) if self.scaler else loss
-                self._backward(loss)
+                    for i in range(NSu):
+                        out = self._forward(u[i : i + 1])
+                        agg_o["energy"] = torch.cat(
+                            [agg_o["energy"], out["energy"]]
+                        )
+                        agg_o["forces"] = torch.cat(
+                            [agg_o["forces"], out["forces"]]
+                        )
+                        loss = self._compute_loss(out, u[i : i + 1])
+                        loss_norm = loss / NSu
+                        avg_l += loss_norm.item()
+                        loss_norm.backward()
+                loss = self.scaler.scale(avg_l) if self.scaler else avg_l
+                self._update_accumulated_gradients()
                 scale = self.scaler.get_scale() if self.scaler else 1.0
 
                 # Compute metrics.
                 self.metrics = self._compute_metrics(
-                    out,
+                    agg_o,
                     batch,
                     self.evaluator,
                     self.metrics,
                 )
                 self.metrics = self.evaluator.update(
-                    "loss", loss.item() / scale, self.metrics
+                    "loss", loss / scale, self.metrics
                 )
 
                 # Log metrics.
@@ -439,6 +460,32 @@ class ForcesTrainer(BaseTrainer):
             self.val_dataset.close_db()
         if self.config.get("test_dataset", False):
             self.test_dataset.close_db()
+
+    def split(self, batch, micro_batch_size):
+        assert type(batch) == torch_geometric.data.batch.DataBatch
+        micro_batches = []
+        index = 0
+        for i in range(self.config["optim"]["batch_size"] // micro_batch_size):
+            micro_batches.append(
+                Batch.from_data_list(
+                    batch.index_select(slice(index, index + micro_batch_size))
+                )
+            )
+            index += micro_batch_size
+        if self.config["optim"]["batch_size"] % micro_batch_size:
+            micro_batches.append(
+                Batch.from_data_list(
+                    batch.index_select(
+                        slice(
+                            index,
+                            index
+                            + self.config["optim"]["batch_size"]
+                            % micro_batch_size,
+                        )
+                    )
+                )
+            )
+        return micro_batches
 
     def _forward(self, batch_list):
         # forward pass.
