@@ -3,8 +3,8 @@ includes:
 
 model:
   name: dimenetplusplus
-  hidden_channels: 85
-  out_emb_channels: 64
+  hidden_channels: 512
+  out_emb_channels: 384
   num_blocks: 3
   cutoff: 6.0
   num_radial: 6
@@ -20,7 +20,7 @@ optim:
   batch_size: 3
   eval_batch_size: 3
   eval_every: 5000
-  num_workers: 4
+  num_workers: 3
   lr_initial: 0.0001
   warmup_steps: -1 # don't warm-up the learning rate
   # warmup_factor: 0.2

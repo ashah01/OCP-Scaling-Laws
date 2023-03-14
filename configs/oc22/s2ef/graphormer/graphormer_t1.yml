@@ -18,8 +18,8 @@ model:
 
 optim:
   batch_size: 16
-  eval_batch_size: 3
-  micro_batch_size: 3
+  eval_batch_size: 2
+  micro_batch_size: 2
   eval_every: 5000
   num_workers: 4
   lr_initial: 0.0003
