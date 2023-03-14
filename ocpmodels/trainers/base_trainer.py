@@ -708,6 +708,40 @@ class BaseTrainer(ABC):
     def _compute_loss(self, out, batch_list):
         """Derived classes should implement this function."""
 
+    def _update_accumulated_gradients(self):
+        # Scale down the gradients of shared parameters
+        if hasattr(self.model.module, "shared_parameters"):
+            for p, factor in self.model.module.shared_parameters:
+                if hasattr(p, "grad") and p.grad is not None:
+                    p.grad.detach().div_(factor)
+                else:
+                    if not hasattr(self, "warned_shared_param_no_grad"):
+                        self.warned_shared_param_no_grad = True
+                        logging.warning(
+                            "Some shared parameters do not have a gradient. "
+                            "Please check if all shared parameters are used "
+                            "and point to PyTorch parameters."
+                        )
+        if self.clip_grad_norm:
+            if self.scaler:
+                self.scaler.unscale_(self.optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm=self.clip_grad_norm,
+            )
+            if self.logger is not None:
+                self.logger.log(
+                    {"grad_norm": grad_norm}, step=self.step, split="train"
+                )
+        if self.scaler:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+        if self.ema:
+            self.ema.update()
+        self.optimizer.zero_grad()
+
     def _backward(self, loss):
         self.optimizer.zero_grad()
         loss.backward()
