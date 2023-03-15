@@ -346,8 +346,8 @@ class ForcesTrainer(BaseTrainer):
                 u = self.split(batch[0], Nu)
                 avg_l = 0  # Batch loss (for use in metrics update)
                 agg_o = {
-                    "energy": torch.tensor([]),
-                    "forces": torch.tensor([]),
+                    "energy": torch.tensor([], device=self.device),
+                    "forces": torch.tensor([], device=self.device),
                 }  # Batch output (for use in metrics computation)
                 # Forward, loss, backward.
                 with torch.cuda.amp.autocast(enabled=self.scaler is not None):

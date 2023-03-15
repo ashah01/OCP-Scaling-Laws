@@ -9,21 +9,27 @@ import numpy as np
 import torch
 from torch import Tensor
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class PBCDataset:
     def __init__(self):
-        self.cell_offsets = torch.tensor(
-            [
-                [-1, -1, 0],
-                [-1, 0, 0],
-                [-1, 1, 0],
-                [0, -1, 0],
-                [0, 1, 0],
-                [1, -1, 0],
-                [1, 0, 0],
-                [1, 1, 0],
-            ],
-        ).float()
+        self.cell_offsets = (
+            torch.tensor(
+                [
+                    [-1, -1, 0],
+                    [-1, 0, 0],
+                    [-1, 1, 0],
+                    [0, -1, 0],
+                    [0, 1, 0],
+                    [1, -1, 0],
+                    [1, 0, 0],
+                    [1, 1, 0],
+                ],
+            )
+            .float()
+            .to(device)
+        )
         self.n_cells = self.cell_offsets.size(0)
         self.cutoff = 8
         self.filter_by_tag = True
@@ -93,6 +99,7 @@ def pad_1d(samples: Sequence[Tensor], fill=0, multiplier=8):
         (n_samples, max_len, *samples[0].shape[1:]),
         fill,
         dtype=samples[0].dtype,
+        device=device,
     )
     for i in range(n_samples):
         x_len = samples[i].size(0)
@@ -168,6 +175,7 @@ class AtomDataset:
         self.atom_mapper = torch.full((128,), unk_idx)
         for idx, atom in enumerate(self.atom_list):
             self.atom_mapper[atom] = idx + 1  # reserve 0 for paddin
+        self.atom_mapper = self.atom_mapper.to(device)
 
     def get(self):
         atoms: Tensor = self.dataset[self.keyword]
