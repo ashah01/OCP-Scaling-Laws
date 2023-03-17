@@ -138,6 +138,7 @@ class Graphormer(BaseModel):
 
         eng_output *= output_mask
         eng_output = eng_output.sum(dim=-1)
+        eng_output = eng_output.unsqueeze(1)
 
         return eng_output
 
@@ -145,7 +146,6 @@ class Graphormer(BaseModel):
         if self.regress_forces:
             data.pos.requires_grad_(True)
         energy = self._forward(data)
-        energy = energy.unsqueeze(1)
         if self.regress_forces:
             forces = -1 * (
                 torch.autograd.grad(
