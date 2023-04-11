@@ -1,0 +1,37 @@
+1. Understand what the generate_graph dist is (and its shape)
+
+    It appears to only be subtracting the rows from the columns, so it's computing the distances between each edge, not every node pair.
+    [12, 3] - [12, 3] -> [12, 3]
+    norm([12, 3]) -> [12]
+
+2. Understand graphormer dist (and its shape)
+    position tensors of size [bsz, n, 3]
+    pos-pos -> [bsz, n, n, 3]
+    norm(dist) -> [bsz, n, n]
+
+    GaussianLayer
+    (mul) [bsz, n, n] -> [bsz, n, n, 1]
+    (bias) [bszz, n, n] -> [bsz, n, n, 1]
+    (x) mul * x + bias -> [bsz, n, n, 1]
+    (x) expand(x, self.K) -> [bsz, n, n, 32]
+    return gaussian(x, mean, std)
+
+3. Determine how to adapt it to proper format
+
+    What even is the proper format? Graphormer distance calculations are
+    computing the distances between every atomic pair, while OCP 
+    is computing the edges distances. Perhaps read the graphormer paper 
+    again and see what their intention with the spatial encoding was.
+
+    Spatial encoding appears to compute the shortest path between every
+    node, irrespective if they're connected or not. This means that the
+    OCP distance matrix is not the correct format for the spatial encoding.
+
+    How do we incorporate the offsets with the position data?
+    The offsets are of a different dimension than the position data. 
+    What does the offset represent?
+
+
+4. Determine if distance can be fixed at zero post vector norm
+   
+

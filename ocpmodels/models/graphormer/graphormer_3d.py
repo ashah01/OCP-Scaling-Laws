@@ -15,7 +15,7 @@ from ocpmodels.common.utils import (
 )
 from ocpmodels.models.base import BaseModel
 
-from .data_loading import load_dataset
+from .data_loading import pad_1d, AtomDataset
 
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)
@@ -42,12 +42,19 @@ class Graphormer(BaseModel):
         num_kernel: int,
         regress_forces: bool = True,
         otf_graph: bool = True,
+        use_pbc: bool = True,
+        cutoff: float = 6.0
     ):
         super().__init__()
+        self.otf_graph = otf_graph
+        self.use_pbc = use_pbc
+        self.cutoff = cutoff
+        self.max_neighbors = 50
         self.regress_forces = regress_forces
         self.atom_types = 64
         self.edge_types = 64 * 64
         self.blocks = blocks
+        self.atom_processor = AtomDataset()
         self.atom_encoder = nn.Embedding(
             self.atom_types, embed_dim, padding_idx=0
         )
@@ -85,7 +92,31 @@ class Graphormer(BaseModel):
 
     @conditional_grad(torch.enable_grad())
     def _forward(self, data):
-        atoms, tags, pos, real_mask = load_dataset(data)
+
+        (
+        edge_index,
+        dist,
+        distance_vec,
+        cell_offsets,
+        offsets,
+        neighbors,
+        ) = self.generate_graph(data)
+        atoms = data.atomic_numbers.long()
+
+        indices = edge_index.unique()
+        batch_atoms = []
+        batch_tags = []
+        batch_pos = []
+        for i in range(data.y.nelement()):
+            mask = (indices >= data.ptr[i]) & (indices < data.ptr[i+1])
+            index = indices[mask]
+            batch_atoms.append(atoms[index])
+            batch_tags.append(data.tags[index])
+            batch_pos.append(data.pos[index])
+
+        atoms = pad_1d(self.atom_processor.get(batch_atoms))
+        tags = pad_1d(batch_tags)
+        pos = pad_1d(batch_pos)
         padding_mask = atoms.eq(0)
 
         n_graph, n_node = atoms.size()
@@ -134,7 +165,7 @@ class Graphormer(BaseModel):
         ).flatten(-2)
         output_mask = (
             tags > 0
-        ) & real_mask  # no need to consider padding, since padding has tag 0, real_mask False
+        )  # no need to consider padding, since padding has tag 0, real_mask False
 
         eng_output *= output_mask
         eng_output = eng_output.sum(dim=-1)

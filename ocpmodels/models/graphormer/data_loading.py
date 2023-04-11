@@ -108,10 +108,8 @@ def pad_1d(samples: Sequence[Tensor], fill=0, multiplier=8):
 
 
 class AtomDataset:
-    def __init__(self, dataset, keyword):
+    def __init__(self):
         super().__init__()
-        self.dataset = dataset
-        self.keyword = keyword
         self.atom_list = [
             1,
             5,
@@ -177,8 +175,7 @@ class AtomDataset:
             self.atom_mapper[atom] = idx + 1  # reserve 0 for paddin
         self.atom_mapper = self.atom_mapper.to(device)
 
-    def get(self):
-        atoms: Tensor = self.dataset[self.keyword]
+    def get(self, atoms):
         return [self.atom_mapper[atom] for atom in atoms]
 
 
