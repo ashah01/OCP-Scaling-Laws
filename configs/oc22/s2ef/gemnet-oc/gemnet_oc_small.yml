@@ -63,7 +63,7 @@ optim:
   eval_batch_size: 3
   load_balancing: atoms
   eval_every: 5000
-  num_workers: 0
+  num_workers: 4
   lr_initial: 5.e-4
   optimizer: AdamW
   optimizer_params: {"amsgrad": True}
